@@ -24,3 +24,9 @@
 [[constraint]]
   name = "github.com/ghodss/yaml"
   version = "1.0.0"
+
+
+
+[[constraint]]
+  name = "github.com/BurntSushi/toml"
+  version = "0.3.0"

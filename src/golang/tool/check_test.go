@@ -5,12 +5,12 @@ package tool
 import (
 	"testing"
 	"fmt"
-	"golang/backup"
+	"golang/sysfile"
 )
 
 func TestCheckDirUpdate(t *testing.T) {
-	backup.Sysdata = backup.NewSysData("/home/daihao/git/go-cos/.gocos")
-	err := backup.Sysdata.Ig.Read("/home/daihao/git/go-cos/.gocos/ignore")
+	sysfile.Sysdata = sysfile.NewSysData("/home/daihao/git/go-cos/.gocos")
+	err := sysfile.Sysdata.Ig.Read("/home/daihao/git/go-cos/.gocos/ignore")
 	if err != nil {
 		fmt.Println(err)
 	}

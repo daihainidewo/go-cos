@@ -9,37 +9,62 @@ import (
 	"syscall"
 	"golang/tool"
 	"path/filepath"
-	"golang/backup"
 	"golang/entity"
 	"encoding/json"
+	"io/ioutil"
+	"bytes"
+	"golang/sysfile"
+	"strconv"
+	"net/http"
+	"golang/cos"
+	"github.com/BurntSushi/toml"
+	"sync"
+	"strings"
+	"time"
+)
+
+const (
+	LastUpdateTimestamp = "LastUpdateTimestamp"
+)
+
+var (
+	SysCos *sysfile.Sysfile
 )
 
 // main main
 func main() {
+	start := time.Now()
+	defer func() {
+		end := time.Now()
+		fmt.Printf("Operating time %gs\n", end.Sub(start).Seconds())
+	}()
 	if len(os.Args) < 2 {
 		fmt.Println("Please enter the command parameters, The system only supports add|checkout|init|pull|push|status operation.")
 		return
 	}
-	if os.Args[1] == "init" {
-		initsys()
-		return
-	}
-	sysdir := "/.gocos"
+
 	tp, err := filepath.Abs(".")
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
+
+	if os.Args[1] == "init" {
+		SysCos = sysfile.NewSysfile(tp)
+		initsys()
+		return
+	}
+
 	tpp := ""
 	projpath := ""
 	for {
-		if tpp == tp {
-			break
-		}
-		if tool.IsDir(tp + sysdir) {
-			projpath = tp + sysdir
+		projpath = tool.PathLink(tp, ".gocos")
+		if tool.IsDir(projpath) {
 			break
 		} else {
+			if tpp == tp {
+				break
+			}
 			tpp = tp
 			tp = filepath.Dir(tp)
 			if err != nil {
@@ -47,18 +72,14 @@ func main() {
 				return
 			}
 		}
+
 	}
 	if projpath == "" {
 		fmt.Println("not found .gocos")
 		return
 	}
 
-	backup.Sysdata = backup.NewSysData(projpath)
-	err = backup.Sysdata.Ig.Read(projpath + "/ignore")
-	if err != nil {
-		fmt.Println("read ignore err", err)
-		return
-	}
+	SysCos = sysfile.NewSysfile(tp)
 
 	signCh := make(chan os.Signal)
 	signal.Notify(signCh, os.Interrupt, os.Kill, syscall.SIGTERM)
@@ -81,14 +102,13 @@ func startup(args []string, signCh chan os.Signal) {
 		checkout()
 	default:
 		fmt.Println("The system only supports add|checkout|init|pull|push|status operation.")
-		return
 	}
 	signCh <- syscall.SIGTERM
 }
 
 // init init
 func initsys() {
-	if tool.IsDir(".gocos") {
+	if tool.IsDir(SysCos.ProjPath()) {
 		if len(os.Args) > 2 && os.Args[2] == "-f" {
 
 		} else {
@@ -96,44 +116,68 @@ func initsys() {
 			return
 		}
 	} else {
-		err := os.Mkdir(".gocos", 0711)
+		err := os.Mkdir(SysCos.ProjPath(), 0711)
 		if err != nil {
 			fmt.Println(err)
 			return
 		}
 	}
 
-	f, err := os.Create(".gocos/conf.yaml")
+	f, err := os.Create(SysCos.ConfPath())
 	defer f.Close()
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	f.Write([]byte("# system init"))
-	f, err = os.Create(".gocos/ignore")
+	f, err = os.Create(SysCos.IgnorePath())
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	f.Write([]byte(".gocos/"))
-	f, err = os.Create(".gocos/backup.json")
+	f, err = os.Create(SysCos.BackupPath())
 	if err != nil {
 		fmt.Println(err)
 		return
 	}
 	f.Write([]byte("{}"))
+	f, err = os.Create(SysCos.SysfilePath())
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	bu := sysfile.NewBackup(SysCos.SysfilePath())
+	bu.Set(LastUpdateTimestamp, "0")
+	err = bu.Write()
+	if err != nil {
+		fmt.Println("write sysfile error", err)
+		return
+	}
 }
 
 // status status
 func status() {
-	bu := backup.NewBackup(backup.Sysdata.GetProjectPath() + "/backup.json")
-	bu.Read()
-	ts, ok := bu.Content[entity.LastUpdateTimestamp]
-	if !ok {
-		ts = int64(0)
+	ig := sysfile.NewIgnore(SysCos.IgnorePath())
+	err := ig.Read()
+	if err != nil {
+		fmt.Println("read ignore error", err)
+		return
 	}
 
-	res, err := tool.CheckDirUpdate(filepath.Dir(backup.Sysdata.GetProjectPath()), ts.(int64))
+	bu := sysfile.NewBackup(SysCos.SysfilePath())
+	err = bu.Read()
+	if err != nil {
+		fmt.Println("read sysfile error", err)
+		return
+	}
+	lut, err := strconv.ParseInt(bu.Get(LastUpdateTimestamp), 10, 64)
+	if err != nil {
+		fmt.Println("parse sysfile error", err)
+	}
+
+	res, err := tool.CheckDirUpdate(ig, SysCos.RootPath(), lut)
 	if err != nil {
 		fmt.Println(err)
 		return
@@ -146,29 +190,32 @@ func status() {
 
 // add add
 func add() {
-	if len(os.Args) < 3 {
-		fmt.Println("Please enter the path you want to add.")
+	ig := sysfile.NewIgnore(SysCos.IgnorePath())
+	if ig.Read() != nil {
+		fmt.Println("read ignore error")
+		return
 	}
-	bu := backup.NewBackup(backup.Sysdata.GetProjectPath() + "/backup.json")
-	ts, ok := bu.Content[entity.LastUpdateTimestamp]
-	if !ok {
-		ts = int64(0)
+
+	bu := sysfile.NewBackup(SysCos.SysfilePath())
+	if bu.Read() != nil {
+		fmt.Println("read sysfile error")
+		return
 	}
-	tsn := ts.(int64)
+	ts, err := strconv.ParseInt(bu.Get(LastUpdateTimestamp), 10, 64)
+	if err != nil {
+		fmt.Println("parse sysfile error", err)
+	}
 	paths := make([]string, 0)
-	for _, d := range os.Args[2:] {
-		d, err := filepath.Abs(d)
-		if err != nil {
-			fmt.Println(err)
-			continue
-		}
-		res, err := tool.CheckDirUpdate(d, tsn)
-		if err != nil {
-			fmt.Println(err)
-			return
-		}
-		paths = append(paths, res...)
+
+	res, err := tool.CheckDirUpdate(ig, SysCos.RootPath(), ts)
+	if err != nil {
+		fmt.Println(err)
+		return
 	}
+	for i, d := range res {
+		res[i] = strings.TrimPrefix(d, SysCos.RootPath()+"/")
+	}
+	paths = append(paths, res...)
 
 	ab := &entity.AddBuffer{Paths: paths}
 	ret, err := json.Marshal(ab)
@@ -176,7 +223,7 @@ func add() {
 		fmt.Println(err)
 		return
 	}
-	f, err := os.Create(backup.Sysdata.GetProjectPath() + "/add-buffer")
+	f, err := os.Create(SysCos.AddBufferPath())
 	defer f.Close()
 	if err != nil {
 		fmt.Println(err)
@@ -186,22 +233,113 @@ func add() {
 	if err != nil {
 		fmt.Println(n, err)
 	}
+	fmt.Println("add file", len(paths))
 }
 
 // push push
 func push() {
-	// TODO
+	pathss, err := ioutil.ReadFile(SysCos.AddBufferPath())
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+	paths := new(entity.AddBuffer)
+	err = json.Unmarshal(pathss, paths)
+	if err != nil {
+		fmt.Println("please exec add again,", err)
+		return
+	}
+	conf := new(sysfile.Conf)
+	_, err = toml.DecodeFile(SysCos.ConfPath(), conf)
+	if err != nil {
+		fmt.Println("toml decode conf.toml error")
+		return
+	}
+	tx := cos.NewTXcos(conf.SecretId, conf.SecretKey, conf.AppId, conf.Host)
+	tb := tool.NewTokenBucket(10)
+	wg := new(sync.WaitGroup)
+	sm := new(sync.Mutex)
+	success := 0
+	loss := 0
+	errpath := make([]string, 0)
+	for _, path := range paths.Paths {
+		tb.Get()
+		wg.Add(1)
+		go func(path string) {
+			defer func() {
+				tb.Put()
+				wg.Done()
+			}()
+			abspath := tool.PathLink(SysCos.RootPath(), path)
+			data, err := ioutil.ReadFile(abspath)
+			if err != nil {
+				fmt.Println("open file error, path", abspath)
+				return
+			}
+			body := bytes.NewBuffer(data)
+			headers := http.Header{}
+			headers.Set("Content-Length", strconv.Itoa(body.Len()))
+			resp, err := tx.Sendfile("/"+path, headers, body)
+			if err != nil {
+				fmt.Println(err)
+				return
+			}
+			fmt.Println(path + " --> " + resp.Status)
+			if resp.StatusCode >= 400 {
+				defer resp.Body.Close()
+				html, err := ioutil.ReadAll(resp.Body)
+				if err != nil {
+					fmt.Println(err)
+					return
+				}
+				fmt.Println(string(html))
+				sm.Lock()
+				loss++
+				errpath = append(errpath, path)
+				sm.Unlock()
+				return
+			}
+			sm.Lock()
+			success++
+			sm.Unlock()
+		}(path)
+	}
 
+	bu := sysfile.NewBackup(SysCos.SysfilePath())
+	bu.Set(LastUpdateTimestamp, strconv.Itoa(int(time.Now().Unix())))
+	err = bu.Write()
+	if err != nil {
+		fmt.Println("write sysfile error", err)
+		return
+	}
+
+	addbuf := sysfile.NewAddBuffer(SysCos.AddBufferPath())
+	addbuf.SetPaths(errpath)
+	err = addbuf.Write()
+	if err != nil {
+		fmt.Println(err)
+		return
+	}
+
+	wg.Wait()
+	fmt.Println()
+	fmt.Println("success:", success, ", loss:", loss)
 }
 
 // pull pull
 func pull() {
 	// TODO
-
+	fmt.Println("Temporarily not supported")
 }
 
 // checkout checkout
 func checkout() {
 	// TODO
+	fmt.Println("Temporarily not supported")
+}
 
+// clear clear
+func clear() {
+	// TODO
+	fmt.Println("Temporarily not supported")
 }
