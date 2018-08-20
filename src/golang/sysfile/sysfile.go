@@ -32,9 +32,9 @@ func (s *Sysfile) AddBufferPath() string {
 }
 
 // BackupPath BackupPath
-func (s *Sysfile) BackupPath() string {
-	return s.projPath + "/.backup"
-}
+//func (s *Sysfile) BackupPath() string {
+//	return s.projPath + "/.backup"
+//}
 
 // ConfPath ConfPath
 func (s *Sysfile) ConfPath() string {
