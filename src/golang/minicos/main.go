@@ -13,6 +13,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -253,8 +254,8 @@ func push() {
 				}
 
 				body := bytes.NewBuffer(data)
-				resp, err := txc.NewRequest("PUT", path, url.Values{}, http.Header{}, body).SetHeaderContentLength(strconv.Itoa(body.Len())).Do()
-				if err != nil {
+				resp, err := txc.NewRequest("PUT", strings.Replace(path, "\\", "/", -1), url.Values{}, http.Header{}, body).SetHeaderContentLength(strconv.Itoa(body.Len())).Do()
+				if err != nil || resp.StatusCode >= 400 {
 					sm.Lock()
 					loss++
 					//errpath = append(errpath, path)
@@ -295,8 +296,8 @@ func push() {
 				}
 
 				body := bytes.NewBuffer(data)
-				resp, err := txc.NewRequest("PUT", path, url.Values{}, http.Header{}, body).SetHeaderContentLength(strconv.Itoa(body.Len())).Do()
-				if err != nil {
+				resp, err := txc.NewRequest("PUT", strings.Replace(path, "\\", "/", -1), url.Values{}, http.Header{}, body).SetHeaderContentLength(strconv.Itoa(body.Len())).Do()
+				if err != nil || resp.StatusCode >= 400 {
 					sm.Lock()
 					loss++
 					//errpath = append(errpath, path)
@@ -329,8 +330,8 @@ func push() {
 					wg.Done()
 				}()
 
-				resp, err := txc.NewRequest("DELETE", path, url.Values{}, http.Header{}, nil).Do()
-				if err != nil {
+				resp, err := txc.NewRequest("DELETE", strings.Replace(path, "\\", "/", -1), url.Values{}, http.Header{}, nil).Do()
+				if err != nil || resp.StatusCode >= 400 {
 					sm.Lock()
 					loss++
 					//errpath = append(errpath, path)
